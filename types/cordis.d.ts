@@ -1,10 +1,9 @@
 /**
- * 最小 cordis Context 声明（自包含 vendored 类型）。
+ * 最小 Cordis Context 与 DSH 服务声明（上游 vendored 类型子集）。
  *
- * 说明：DSH 的客户端包（dsh-client-runtime / dsh-client-ui-slots 等）尚未
- * 对外发布稳定版本（npm 上仅 0.0.1-rc.1），因此本插件按「运行中的
- * dsh@0.1.0-rc.6」实际暴露的 API 形状 vendored 了所需的最小类型。
- * 宿主代码只做 type-only import，构建时被擦除，不影响运行。
+ * 仅覆盖本插件使用的接口，用于自包含的类型检查与声明输出。
+ * 本地兼容版另用实际 DSH 0.1.7-rc.2 和 0.2.0-rc.2 SDK 验证运行行为。
+ * type-only import 在构建时被擦除；本文件不代表完整 SDK 类型声明。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 

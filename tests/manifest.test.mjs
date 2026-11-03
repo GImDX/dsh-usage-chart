@@ -8,7 +8,7 @@ test('package declares an installable DSH web bundle', () => {
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(pkg.dsh.client.platform, 'web')
   assert.ok(pkg.keywords.includes('dsh-plugin'))
-  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-locale'], '>=0.1.0-rc.6 <0.2.0')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-locale'], '0.1.7-rc.2 || 0.2.0-rc.2')
   assert.equal(pkg.peerDependenciesMeta['@deepseek-ai/dsh-client-locale'].optional, true)
 })
 

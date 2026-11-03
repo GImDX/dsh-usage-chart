@@ -4,7 +4,7 @@
  *
  *  - lib/index.js  —— host 半区（Node ESM，加载器按 package.json main 导入）
  *  - lib/client.js —— client 半区（浏览器 CJS 工厂包，`window.__ModuleLoader__.load`
- *                     注册；外部依赖 = DSH web 的 PLATFORM_MODULES + runtime/client 豁免，
+ *                     注册；外部依赖 = DSH web 中实际可用的平台模块，
  *                     与 monorepo packages/client/tsdown.client.ts 的规则保持一致）
  *
  * 用法：node build.mjs   （可选 DSH_PLUGIN_ID 覆盖注册 id，默认 dsh-usage-chart）
@@ -20,7 +20,6 @@ const tscBin = require.resolve('typescript/bin/tsc')
 const PLUGIN_ID = process.env.DSH_PLUGIN_ID ?? 'dsh-usage-chart'
 
 // 与 @deepseek-ai/dsh-client-web/src/platform.ts 的 PLATFORM_MODULES 完全一致
-// + RUNTIME_STORE_EXEMPTION（packages/client/tsdown.client.ts 的 CLIENT_EXTERNALS）。
 // 运行时这些 specifier 由浏览器的模块表（loader）回答，绝不内联。
 const CLIENT_EXTERNALS = [
   'react',
@@ -29,11 +28,8 @@ const CLIENT_EXTERNALS = [
   'react-dom/client',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
-  '@deepseek-ai/dsh-client-runtime/client',
 ]
 
 // A clean output directory prevents stale chunks or declarations from leaking

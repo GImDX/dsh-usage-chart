@@ -2,6 +2,47 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/). 中文版见 [CHANGELOG_ZH.md](./CHANGELOG_ZH.md).
 
+## [1.1.7] - 2026-09-24
+
+### Fixed
+
+- **DSH 0.1.2+ conversation nodes** — [PR #12](https://github.com/Max-Samson/dsh-usage-chart/pull/12): the dock indicator and assistant cost badges now read `legacy.nodes` from the independent `chat` slot source (`useChat`). Older DSH versions still use the session snapshot's `chat.legacy.nodes` or top-level `nodes`. Both hooks are called in a fixed order to preserve React hook state; the session fallback selects only the node list, avoiding rerenders from unrelated session updates.
+- **Panel placement under themed docks** — [PR #14](https://github.com/Max-Samson/dsh-usage-chart/pull/14): the fixed usage panel converts viewport coordinates to its nearest CSS containing block when a dock or ancestor uses `transform`, `filter`, `backdrop-filter`, containment, or related properties. The follow-up handles borders, the root element, and additional `will-change` values, while ignoring `contain: style`, which does not establish the required containing block.
+- **Session total across models and billing periods** — [PR #15](https://github.com/Max-Samson/dsh-usage-chart/pull/15): the indicator and panel sum the host's per-round CNY/USD costs instead of repricing all session tokens with one model and one current billing tier. This preserves each round's model and peak/off-peak start time. If history is unavailable or a round lacks cost, the client falls back to an estimate from the `/pricing` snapshot.
+- **Merge regression and live-cost synchronization** — commits `9753856` and `cc0963f`: restored PR #12's `useChat` connection in the indicator after PR #15's merge had reverted it and left `ChatNodesHook` unimported. The indicator and panel now share one history result, model attribution, and session cost. When live token usage exceeds the fetched history, they display the sum of fetched rounds plus a marked estimate for only the new tokens, then refresh the host fold after 750 ms of quiet. A panel refresh updates the indicator too; failed history requests can be retried, and stale responses from another session cannot replace the selected session.
+
+### Tests
+
+- Added regression coverage for chat-source priority and legacy fallback, stable selector use, per-round currency sums, stale-history deltas, and the dock indicator's actual component wiring and model/cost display. `npm run verify` passes all 46 tests. A local headless-browser probe also exercised the live-cost transition and matching panel total; a running DSH Web installation should still be smoke-tested before publishing.
+
+## [1.1.6] - 2026-09-19
+
+### Fixed
+
+- **Host pricing file source lifecycle (`pricing.json` override & change watcher)** — [PR #10](https://github.com/Max-Samson/dsh-usage-chart/pull/10):
+  - Fixed premature disposal of `filePricingSource` during plugin registration: `ctx.effect(() => fileSource.dispose(), ...)` called `dispose()` synchronously while building the fiber and registered `undefined` as the cleanup handler, aborting initial asynchronous file loading and disabling the file change watcher. Resolved by returning a disposer function: `ctx.effect(() => () => fileSource.dispose(), ...)`.
+  - Updated test mocks in `tests/core.test.mjs`, `tests/pricing.test.mjs`, and `tests/rounds.test.mjs` to properly track and execute Cordis effect disposers in `after()`.
+  - Added regression test covering the `/pricing` route with user `pricing.json` overrides enabled at startup.
+
+## [1.1.5] - 2026-09-12
+
+### Changed
+
+- **DeepSeek official pricing update (2026-09-10) & `deepseek-flash` support** — [PR #8](https://github.com/Max-Samson/dsh-usage-chart/pull/8):
+  - **New `deepseek-flash` model pricing**: Updated builtin pricing according to the official DeepSeek pricing table (verified 2026-09-10). The new `deepseek-flash` rates are:
+    - **Off-peak** (Beijing Mon–Fri non-peak & weekends): CNY 1.0 / 0.02 / 4.0 per 1M tokens (cache-miss input / cache-hit input / output); USD 0.15 / 0.003 / 0.6 per 1M tokens.
+    - **Peak** (Beijing Mon–Fri 09:00–12:00 & 14:00–18:00): CNY 2.0 / 0.04 / 8.0 per 1M tokens; USD 0.30 / 0.006 / 1.2 per 1M tokens.
+  - **Backward compatibility for legacy model names**: `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are mapped to `deepseek-flash` in `BUILTIN_PRICING` so historical session logs continue resolving without falling back to unknown-model estimates.
+  - **Fallback pricing**: Default unlisted model fallback (`FALLBACK_PRICING`) now points to the new `deepseek-flash` pricing.
+  - **Docs & test synchronization**: Updated custom `pricing.json` example in `README.md` and `README_ZH.md` (`verifiedAt: 1788998400000`), and aligned test cases across `tests/core.test.mjs`, `tests/pricing.test.mjs`, and `tests/rounds.test.mjs` (`BUILTIN_VERIFIED_AT` set to `2026-09-10T00:00:00Z`).
+
+## [1.1.4] - 2026-09-08
+
+### Fixed
+
+- **`dsh-session >= 0.1.2-rc.1` compatibility (snapshotEvents())** — [PR #7](https://github.com/Max-Samson/dsh-usage-chart/pull/7): `dsh-session` removed its public `events` property in `0.1.2-rc.1` (replaced by the `snapshotEvents()` method); the `/usage` route then threw `TypeError: events is not iterable`, which `dsh-host-webserver` wrapped as a bare `400` empty response, and the per-round chart disappeared (the client fell back to the empty observed-rounds path). Reproduced live on `dsh-session 0.1.2-rc.1`: `/usage?session=<loaded>` returned an empty `400` while `/usage?session=<unknown>` returned the plugin `404` JSON and folding the same log offline succeeded — confirming the crash was only the new runtime API shape. The host now reads events via capability detection — prefers `session.snapshotEvents()` when the function is present and falls back to the legacy `session.events ?? []` (so a missing API can never crash the route again). The vendored `SessionEventLike` type adds the `time` field (Unix epoch ms) and a `SessionHandle` shape (optional `events` + optional `snapshotEvents`) so `SessionStoreService.get()/list()` stay valid across both API generations. Verified against the upstream `deepseek-harness` source: `Session.events` was removed from `0.1.2-alpha.4` onward (official architecture note `2026-08-21-session-log-read-intent`); the installed `0.1.0-rc.6` still exposes `events`, so the fallback path remains covered.
+- **Test coverage for the new `snapshotEvents()` access path**: added `tests/rounds.test.mjs` → `/usage route prefers snapshotEvents() when the new API is present`, mocking a session handle that exposes only `snapshotEvents()` (its `get events()` throws, proving the route never reads the removed property), asserts `time` is consumed (duration/peak billing) and that `snapshotEvents()` wins when both APIs are present.
+
 ## [1.1.2] - 2026-08-26
 
 ### Improved & Fixed

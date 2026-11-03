@@ -3,6 +3,48 @@
 本文件记录本项目所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。英文版见 [CHANGELOG.md](./CHANGELOG.md)。
 
+## [1.1.7] - 2026-09-24
+
+### 修复
+
+- **兼容 DSH 0.1.2+ 的会话节点来源**——[PR #12](https://github.com/Max-Samson/dsh-usage-chart/pull/12)：输入框下方的指示器和助手消息成本徽章从独立的 `chat` 槽位源（`useChat`）读取 `legacy.nodes`。旧版 DSH 继续从会话快照的 `chat.legacy.nodes` 或顶层 `nodes` 回退；两个 hook 始终按固定顺序调用，避免 React hook 状态错位。旧版回退仅订阅节点列表，减少无关会话状态更新引起的重渲染。
+- **皮肤下的面板定位**——[PR #14](https://github.com/Max-Samson/dsh-usage-chart/pull/14)：dock 或祖先使用 `transform`、`filter`、`backdrop-filter`、CSS containment 等属性时，将视口坐标换算到最近的 fixed 定位包含块，修复面板偏到屏幕右侧的问题。后续修复补齐边框偏移、根元素和更多 `will-change` 属性的处理，并排除不创建该包含块的 `contain: style`。
+- **跨模型、跨计费时段的会话总成本**——[PR #15](https://github.com/Max-Samson/dsh-usage-chart/pull/15)：指示器与面板逐轮累加宿主折叠出的 CNY/USD 成本，保留每轮自己的模型和开始时刻对应的高峰/空闲价格；不再用单一模型、当前时段价格重算整场会话。历史不可用或轮次缺少成本时，按 `/pricing` 快照回退估算。
+- **合并回归及实时成本同步**——提交 `9753856`、`cc0963f`：恢复 PR #15 合并时覆盖的指示器 `useChat` 接线，补回丢失的 `ChatNodesHook` 导入。指示器和面板现在共用同一份历史、模型归因及成本结果；实时 token 超过已读取历史时，显示“已结算轮次成本＋仅新增 token 的估算成本”，静默 750 毫秒后刷新宿主历史。面板手动刷新也会更新指示器；历史请求失败可重试，切换会话后旧请求不会覆盖新会话的数据。
+
+### 测试
+
+- 新增 chat 源优先级、旧版回退、选择器订阅、双币种逐轮求和、历史过期增量，以及指示器实际组件接线和模型/成本显示的回归测试。`npm run verify` 的 46 项测试全部通过；本地无头浏览器模拟验证了实时估算转为权威历史及面板金额一致。发布前仍应在运行中的 DSH Web 上完成安装冒烟测试。
+
+## [1.1.6] - 2026-09-19
+
+### 修复
+
+- **宿主自定义价格文件源生命周期早释问题（`pricing.json` 覆盖与变更监听）**——[PR #10](https://github.com/Max-Samson/dsh-usage-chart/pull/10)：
+  - **修复 `filePricingSource` 启动即被销毁的 Bug**：此前 `ctx.effect(() => fileSource.dispose(), ...)` 在挂载期立即执行了清理调用，导致文件数据源在首次异步读取完成前被截断关闭，致使用户配置的 `pricing.json` 覆盖及变更监听均无法生效。现已修正为返回高阶清理函数 `ctx.effect(() => () => fileSource.dispose(), ...)`，使文件源在 fiber 卸载时才被释放。
+  - **纠正单测 Cordis effect Mock 语义**：在 `tests/core.test.mjs`、`tests/pricing.test.mjs` 与 `tests/rounds.test.mjs` 中对齐 Cordis 真实生命周期契约，在 `after()` 中统一执行清理函数。
+  - **补充端到端回归用例**：新增 `/pricing route serves the user pricing.json override (file source survives startup)`，验证插件挂载自定义 `pricing.json` 时价格覆盖正常生效且来源正确标记为 `file`。
+
+
+## [1.1.5] - 2026-09-12
+
+### 变更与优化
+
+- **同步 DeepSeek 官方最新调价（2026-09-10）与 `deepseek-flash` 适配**——[PR #8](https://github.com/Max-Samson/dsh-usage-chart/pull/8)：
+  - **新增 `deepseek-flash` 官方刊例价**：按 DeepSeek 官方 2026-09-10 最新调价更新内置定价表，`deepseek-flash` 刊例价全面下调：
+    - **空闲时段**（北京时间工作日非高峰与周末全天）：人民币 CNY 1.0 / 0.02 / 4.0 每 1M tokens（未命中输入 / 命中输入 / 输出）；美元 USD 0.15 / 0.003 / 0.6 每 1M tokens。
+    - **高峰时段**（北京时间工作日 09:00–12:00 与 14:00–18:00）：人民币 CNY 2.0 / 0.04 / 8.0 每 1M tokens；美元 USD 0.30 / 0.006 / 1.2 每 1M tokens。
+  - **历史模型标识平滑兼容**：将 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 指向 `deepseek-flash` 价格表，确保历史会话在重新加载与折叠时平滑解析，不被判定为未定价模型。
+  - **未收录模型回退**：未收录模型的默认保守估算回退（`FALLBACK_PRICING`）同步切换至新版 `deepseek-flash` 刊例价。
+  - **文档与测试同步**：更新 README 中的 `pricing.json` 自定义配置示例与核验时间戳（`verifiedAt: 1788998400000` 即 2026-09-10）；全量同步 core、pricing、rounds 单测断言与 `BUILTIN_VERIFIED_AT`。
+
+## [1.1.4] - 2026-09-08
+
+### 修复
+
+- **适配 `dsh-session >= 0.1.2-rc.1`（改用 `snapshotEvents()`）**——[PR #7](https://github.com/Max-Samson/dsh-usage-chart/pull/7)：`dsh-session` 在 `0.1.2-rc.1` 移除了公开的 `events` 属性（改为 `snapshotEvents()` 方法）；`/usage` 路由随之抛 `TypeError: events is not iterable`，被 `dsh-host-webserver` 包装成裸 `400` 空响应，每轮图表消失（客户端回退到空的 observed-rounds 路径）。已在 `dsh-session 0.1.2-rc.1` 上实测复现：`/usage?session=<已加载会话>` 返回空 `400`、`/usage?session=<未知>` 返回插件 `404` JSON、离线折叠同一日志却成功——证明崩溃仅源于新版运行时 API 形状。宿主现在通过能力检测读取事件——`snapshotEvents` 为函数时优先调用它，否则回退到旧版 `session.events ?? []`（即便 API 缺失也绝不再导致路由崩溃）。同时为 vendored 的 `SessionEventLike` 类型补齐 `time` 字段（Unix epoch 毫秒），并新增 `SessionHandle` 形状（可选 `events` + 可选 `snapshotEvents`），使 `SessionStoreService.get()/list()` 在新旧两代 API 下均成立。已对照上游 `deepseek-harness` 源码核实：`Session.events` 自 `0.1.2-alpha.4` 起移除（官方架构笔记 `2026-08-21-session-log-read-intent`）；本机安装的 `0.1.0-rc.6` 仍暴露 `events`，因此回退分支持续有覆盖。
+- **为新的 `snapshotEvents()` 读取路径补充测试**：新增 `tests/rounds.test.mjs` → `/usage route prefers snapshotEvents() when the new API is present`，mock 一个只暴露 `snapshotEvents()` 的会话句柄（其 `get events()` 会抛错，证明路由绝不读取被移除的属性），断言 `time` 被正确消费（耗时/峰值计费），并验证同时暴露两者时优先使用 `snapshotEvents()`。
+
 ## [1.1.2] - 2026-08-26
 
 ### 优化与修复

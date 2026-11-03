@@ -10,27 +10,32 @@ import { currencySymbol, useBalance } from './balance.ts'
 import { useDisplayCurrency } from './currency.ts'
 import { getUiCopy, useUiLocale } from './i18n.ts'
 import { resolveCost, usePricing } from './pricing-api.ts'
+import { useHistoryRounds } from './rounds/history.ts'
 import { useObservedRounds } from './rounds/observed.ts'
-import { snapshotNodes, type ConversationNode, type ConversationSnapshot } from './snapshot.ts'
+import { lastRoundModel, sameUsage, sumRoundCosts, usageDelta } from './rounds/summary.ts'
+import { nodeModelName, useSessionNodes, type ChatNodesHook, type ConversationNode, type ConversationSnapshot } from './snapshot.ts'
 import type { ContextBreakdownData } from './diagnose/context.ts'
 import { UsagePanel } from './UsagePanel.tsx'
 
 export interface DockUsageProps {
-  /** 会话快照选择器（framework 标准套件）。 */
+  /** 会话快照选择器（framework 标准套件；0.1.x / 0.2.x 均由 ui-session 提供）。 */
   useSession: <S>(selector: (s: ConversationSnapshot) => S) => S
-  /** 投影读取钩子（framework 标准套件）。 */
+  /** chat 快照选择器（framework 标准套件；0.1.2+ / 0.2.x 由 ui-chat 提供，节点列表在 legacy.nodes）。 */
+  useChat?: ChatNodesHook
+  /** 投影读取钩子（framework 标准套件；键名与载荷在 0.1.x / 0.2.x 不变）。 */
   useProjection: (key: 'tokenUsage' | 'contextPressure' | 'contextBreakdown') => unknown
   sessionId: string
-  session: ConversationSnapshot
-  input: unknown
+  /** 旧版（0.1.x）composer.dock owner props；0.2.x 不再传入，本插件不读取。 */
+  session?: ConversationSnapshot
+  input?: unknown
 }
 
 function deriveModel(nodes: readonly ConversationNode[]): string | undefined {
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i]
     if (n.kind !== 'assistant') continue
-    if (n.provenance?.model !== undefined && n.provenance.model !== '') return n.provenance.model
-    if (n.requestConfig?.model !== undefined && n.requestConfig.model !== '') return n.requestConfig.model
+    const model = nodeModelName(n)
+    if (model !== undefined) return model
   }
   return undefined
 }
@@ -50,8 +55,26 @@ function ChartIcon(): JSX.Element {
   )
 }
 
+/**
+ * fixed 定位的包含块：任一 transform/filter/contain 祖先都会把定位基准从视口改成它自己
+ * （皮肤给 dock 子元素加了 backdrop-filter，面板随之整体偏移）。
+ */
+function containingBlock(start: HTMLElement): Element | null {
+  // 属性可能不存在（旧浏览器）：undefined 一律按「不创建包含块」处理。
+  const creates = (value: string | undefined): boolean => value !== undefined && value !== 'none' && value !== 'normal'
+  for (let node: Element | null = start; node !== null; node = node.parentElement) {
+    const style = getComputedStyle(node)
+    if (creates(style.transform) || creates(style.translate) || creates(style.rotate) || creates(style.scale)
+      || creates(style.perspective) || creates(style.filter) || creates(style.backdropFilter)
+      || /\b(layout|paint|strict|content)\b/.test(style.contain)
+      || creates(style.containerType)
+      || /\b(transform|translate|rotate|scale|perspective|filter|backdrop-filter|contain)\b/.test(style.willChange)) return node
+  }
+  return null
+}
+
 export function UsageIndicator(props: DockUsageProps): JSX.Element | null {
-  const { useSession, useProjection, sessionId } = props
+  const { useSession, useChat, useProjection, sessionId } = props
   const locale = useUiLocale()
   const copy = getUiCopy(locale)
   const { currency } = useDisplayCurrency()
@@ -64,14 +87,53 @@ export function UsageIndicator(props: DockUsageProps): JSX.Element | null {
   const totals = useProjection('tokenUsage') as TokenUsageBuckets | undefined
   const pressure = useProjection('contextPressure') as { pressureTokens?: number; projectedTokens?: number; contextWindow?: number } | undefined
   const breakdown = useProjection('contextBreakdown') as ContextBreakdownData | undefined
-  const nodes = useSession((s) => snapshotNodes(s))
-  const model = useMemo(() => deriveModel(nodes), [nodes])
+  const nodes = useSessionNodes(useChat, useSession)
+  const history = useHistoryRounds(sessionId)
+  const usageVersion = totals === undefined ? null : [
+    totals.uncachedInputTokens, totals.cacheReadTokens, totals.cacheWriteTokens, totals.outputTokens,
+  ].join(':')
+  const refreshVersion = useRef<{ sessionId: string; usage: string | null } | null>(null)
+  const historyCurrent = history.status === 'ok' && (totals === undefined || sameUsage(totals, history.totals))
+  const model = useMemo(() => {
+    const live = deriveModel(nodes)
+    const host = history.status === 'ok' ? lastRoundModel(history.rounds) : undefined
+    return historyCurrent ? host ?? live : live ?? host
+  }, [nodes, history.status, history.rounds, historyCurrent])
   const pricing = usePricing()
   const observedRounds = useObservedRounds(totals, nodes, pricing.table, currency)
   const { status: balanceStatus, data: balanceData, load: loadBalance } = useBalance(true)
 
+  // Projection updates immediately; refresh the authoritative fold after a quiet period.
+  useEffect(() => {
+    if (history.status !== 'ok' || usageVersion === null) return
+    const previous = refreshVersion.current
+    if (previous?.sessionId === sessionId && previous.usage === usageVersion) return
+    refreshVersion.current = { sessionId, usage: usageVersion }
+    if (previous?.sessionId !== sessionId && historyCurrent) return
+    const timer = window.setTimeout(() => { void history.load() }, 750)
+    return () => window.clearTimeout(timer)
+  }, [sessionId, usageVersion, history.status, historyCurrent, history.load])
+
   const hasTokens = totals !== undefined && (billedInputTokens(totals) > 0 || totals.outputTokens > 0)
-  const cost = totals !== undefined && pricing.table !== null ? resolveCost(pricing.table, totals, model, Date.now(), currency) : undefined
+  // 已折叠的轮次保留各自的模型/时段；实时投影领先时仅估算新增 token。
+  const historyCost = history.status === 'ok' ? sumRoundCosts(history.rounds, currency) : null
+  const delta = totals !== undefined && history.status === 'ok' ? usageDelta(totals, history.totals) : null
+  const estimateBuckets = historyCost !== null && delta !== null ? delta : totals
+  const estimate = estimateBuckets !== undefined && pricing.table !== null
+    ? resolveCost(pricing.table, estimateBuckets, model, Date.now(), currency)
+    : undefined
+  let costSplitTotal = historyCurrent ? historyCost : null
+  if (!historyCurrent && historyCost !== null && delta !== null && estimate !== undefined) {
+    costSplitTotal = {
+      input: historyCost.input + estimate.split.input,
+      cacheRead: historyCost.cacheRead + estimate.split.cacheRead,
+      output: historyCost.output + estimate.split.output,
+      total: historyCost.total + estimate.split.total,
+      estimated: true,
+    }
+  } else if (!historyCurrent && estimate !== undefined) {
+    costSplitTotal = { ...estimate.split, estimated: true }
+  }
   const cacheHit = totals !== undefined ? cacheHitPercent(totals) : null
   const pressurePct = pressurePercent(pressure)
   const breakdownTotal = (breakdown?.systemTokens ?? 0) + (breakdown?.toolsTokens ?? 0) + (breakdown?.messageTokens ?? 0)
@@ -89,8 +151,17 @@ export function UsageIndicator(props: DockUsageProps): JSX.Element | null {
     if (el === null) return
     const r = el.getBoundingClientRect()
     const width = Math.min(Math.max(r.width, 320), 520, window.innerWidth - 16)
-    const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8)
-    setAnchor({ left, width, bottom: window.innerHeight - r.top + 8 })
+    const left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - width - 8))
+    // 视口坐标 → 包含块坐标：面板是 fixed，祖先有 transform/filter/contain 时 left/bottom 以它为准。
+    const block = containingBlock(el)
+    const base = block?.getBoundingClientRect()
+    // fixed 的坐标原点是包含块 padding box，而 DOMRect 覆盖 border box。
+    const borderBottom = block === null ? 0 : Number.parseFloat(getComputedStyle(block).borderBottomWidth) || 0
+    setAnchor({
+      left: left - (base?.left ?? 0) - (block?.clientLeft ?? 0),
+      width,
+      bottom: (base?.bottom ?? window.innerHeight) - borderBottom - r.top + 8,
+    })
   }, [])
 
   useLayoutEffect(() => {
@@ -136,7 +207,7 @@ export function UsageIndicator(props: DockUsageProps): JSX.Element | null {
     parts.push({ key: 'output', text: `${copy.output} ${formatTokens(totals.outputTokens)}` })
     if (cacheHit !== null) parts.push({ key: 'cache', text: `${copy.cache} ${cacheHit}%` })
   }
-  if (cost !== undefined) parts.push({ key: 'cost', text: `${copy.cost} ${cost.estimated ? '≈' : ''}${formatMoney(cost.split.total, currency)}`, estimated: cost.estimated })
+  if (costSplitTotal !== null) parts.push({ key: 'cost', text: `${copy.cost} ${costSplitTotal.estimated ? '≈' : ''}${formatMoney(costSplitTotal.total, currency)}`, estimated: costSplitTotal.estimated })
   if (model !== undefined) parts.push({ key: 'model', text: model.replace(/^deepseek-/, '') })
 
   const balanceLabel = balanceStatus === 'loading' || (balanceStatus === 'ok' && balance === undefined)
@@ -203,10 +274,11 @@ export function UsageIndicator(props: DockUsageProps): JSX.Element | null {
           style={{ left: anchor.left, width: anchor.width, bottom: anchor.bottom }}
         >
           <UsagePanel
-            sessionId={sessionId}
+            history={history}
             locale={locale}
             totals={totals ?? { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }}
             model={model}
+            costSplitTotal={costSplitTotal}
             observedRounds={observedRounds}
             pressure={pressure}
             breakdown={breakdown}

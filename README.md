@@ -30,6 +30,8 @@ Click ▸ to open the dashboard panel:
 - **Session usage summary** — Input (uncached/cached), output, cache-hit percentage, and context occupancy (derived from official adapter `tokenUsage` / `contextPressure` projections).
 - **Context breakdown & compaction diagnostics (v1.1.0)** — Official `contextBreakdown` projection breakdown (System prompt / Tools schema / Message history token counts and percentage with a 3-segment color bar, annotated as heuristic approximations); Host folds `compaction/*` events (which round was compacted, how many tokens were freed, model used, and summarize call cost); provides proactive suggestions (≥75% / ≥90% occupancy) to start a new session or reduce large file injections.
 - **Cost estimation** — Estimated from official list prices (CNY/USD dual-currency per 1M tokens, peak/off-peak tiers) with verified source date; supports user override via `pricing.json`; unpriced models are explicitly tagged.
+- **Session-cost aggregation (v1.1.7)** — Adds the host's per-round costs using each round's model and billing tier. While a new round is in progress, the indicator and panel share the fetched history plus a marked estimate for new tokens, then refresh the history after token updates pause. The model label follows the same current-history/live-node priority in both places.
+- **DSH 0.1.2+ and themed docks (v1.1.7)** — Reads conversation nodes from the independent `chat` source on newer DSH versions, with a legacy session-snapshot fallback; keeps the expanded panel anchored when a theme creates a fixed-position containing block.
 - **Peak / off-peak tiered billing (v1.0.1)** — Peak hours (Beijing time Monday–Friday 09:00–12:00 and 14:00–18:00, UTC 01:00–04:00 and 06:00–10:00) billed at 2× the off-peak rate; all other hours and weekends billed at off-peak rates; rounds bill automatically based on start time (or conservative peak if unknown); live red/green tag in the panel header.
 - **Official dual-currency list pricing (v1.0.1)** — Builtin official CNY and USD prices directly used according to the active display currency — **no FX conversion applied to costs** (matching official billing); "Refresh rate" updates only the informational "1 USD ≈ X CNY" reference note.
 - **Multi-currency display (v0.3 / v1.0.1)** — One-click toggle between USD and CNY (persisted in localStorage); indicator, panel, chart, and badges all follow.
@@ -72,11 +74,11 @@ dsh plugin --profile web add dsh-usage-chart   # installs and registers the prof
 dsh web --profile web                          # starts DSH Web (stop it first if already running)
 ```
 
-To update (upgrade to a new version): pnpm may print `Already up to date` when already installed — use an **explicit version** (recommended) or **remove then re-add**:
+To update after 1.1.7 is published: pnpm may print `Already up to date` when already installed — use an **explicit version** (recommended) or **remove then re-add**:
 
 ```sh
 # Option ①: pin the target version explicitly
-dsh plugin --profile web add dsh-usage-chart@1.1.2
+dsh plugin --profile web add dsh-usage-chart@1.1.7
 # Option ②: remove, then re-add (back to latest)
 dsh plugin --profile web remove dsh-usage-chart
 dsh plugin --profile web add dsh-usage-chart
@@ -148,16 +150,16 @@ Costs are resolved with priority **user override file > builtin list price > fal
 
 ```json
 {
-  "deepseek-v4-flash": {
+  "deepseek-flash": {
     "offPeak": {
-      "cny": { "cacheMissInput": 1.5, "cacheHitInput": 0.05, "output": 4.5 },
-      "usd": { "cacheMissInput": 0.22, "cacheHitInput": 0.007, "output": 0.66 }
+      "cny": { "cacheMissInput": 1, "cacheHitInput": 0.02, "output": 4 },
+      "usd": { "cacheMissInput": 0.15, "cacheHitInput": 0.003, "output": 0.6 }
     },
     "peak": {
-      "cny": { "cacheMissInput": 3.0, "cacheHitInput": 0.10, "output": 9.0 },
-      "usd": { "cacheMissInput": 0.44, "cacheHitInput": 0.014, "output": 1.32 }
+      "cny": { "cacheMissInput": 2, "cacheHitInput": 0.04, "output": 8 },
+      "usd": { "cacheMissInput": 0.3, "cacheHitInput": 0.006, "output": 1.2 }
     },
-    "verifiedAt": 1755100800000
+    "verifiedAt": 1788998400000
   }
 }
 ```
@@ -278,7 +280,7 @@ dsh-usage-chart/
 
 | Component | Supported |
 |---|---|
-| DSH | ≥ 0.1.0-rc.6, built against the 0.1.x API |
+| DSH | ≥ 0.1.0-rc.6, built against the 0.1.x API; adapts to the `dsh-session` `snapshotEvents()` API — `Session.events` was removed in `0.1.2-rc.1`, so the `/usage` route reads events via `snapshotEvents()` with a legacy `events` fallback |
 | Node.js | ≥ 20 |
 | Web UI | React 18 / `conversation.composer.dock` + `conversation.chat.assistant-actions` |
 | OS | macOS, Linux, Windows (pure JavaScript, no native dependencies) |
